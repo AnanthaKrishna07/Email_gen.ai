@@ -1,29 +1,58 @@
 import { NextResponse } from 'next/server';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractString(obj: any): string {
+  if (!obj) return "";
+  if (typeof obj === 'string') return obj;
+  
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const res = extractString(item);
+      if (res) return res;
+    }
+  }
+  
+  if (typeof obj === 'object') {
+    const priorities = ['text', 'output', 'content', 'response', 'value'];
+    for (const key of priorities) {
+      if (obj[key] && typeof obj[key] === 'string') {
+        return obj[key];
+      }
+    }
+    if (obj.message) {
+      const res = extractString(obj.message);
+      if (res) return res;
+    }
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        if (key === 'req' || key === 'request' || key === 'headers') continue;
+        const res = extractString(obj[key]);
+        if (res) return res;
+      }
+    }
+  }
+  return "";
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const { prompt, recipientEmail } = body;
 
-    // 1. Validate the input from the frontend
     if (!prompt || !recipientEmail) {
       return NextResponse.json({ error: 'Missing prompt or recipient' }, { status: 400 });
     }
 
-    // 2. Grab the secret webhook URL from .env.local
     const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
 
-    // Phase 2 Testing: If we haven't added the real n8n URL yet, simulate the connection
     if (!N8N_WEBHOOK_URL || N8N_WEBHOOK_URL === "http://placeholder-url.com") {
-        console.log("Backend securely received data:", { recipientEmail, prompt });
-        
-        // Simulate a 1.5 second network delay
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        
-        return NextResponse.json({ success: true, message: 'Simulated success!' });
+        return NextResponse.json({ 
+          success: true, 
+          subject: "Simulated Subject Line",
+          body: "This is a simulated professional email draft for testing purposes." 
+        });
     }
 
-    // 3. Phase 3 Production Logic: Send the data to n8n
     const response = await fetch(N8N_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -34,7 +63,34 @@ export async function POST(request: Request) {
       throw new Error('Failed to trigger n8n workflow');
     }
 
-    return NextResponse.json({ success: true });
+    const aiData = await response.json();
+    
+    let rawText = "";
+    const targetObj = Array.isArray(aiData) ? aiData[0] : aiData;
+    
+    if (targetObj?.content?.parts?.[0]?.text) {
+      rawText = targetObj.content.parts[0].text;
+    } else {
+      rawText = extractString(aiData);
+    }
+    
+    // Default fallback values if parsing fails
+    let subject = "Professional Email";
+    let bodyText = rawText;
+
+    // Smart Parser: Split the text at the SUBJECT: and BODY: designators
+    if (rawText.toUpperCase().includes("SUBJECT:") && rawText.toUpperCase().includes("BODY:")) {
+      const match = rawText.match(/SUBJECT:\s*(.*?)\s*BODY:\s*([\s\S]*)/i);
+      if (match) {
+        subject = match[1].trim();
+        bodyText = match[2].trim();
+      }
+    }
+
+    // Clean up any stray markdown code blocks if the AI accidentally added them
+    subject = subject.replace(/```json|```/g, "").trim();
+
+    return NextResponse.json({ success: true, subject, body: bodyText });
 
   } catch (error) {
     console.error("Backend API Error:", error);
